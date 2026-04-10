@@ -3,9 +3,9 @@ experts/expert_base.py
 Model loading (once at module level) + shared inference + post-processing pipeline.
 
 GLOBAL CONSTRAINTS:
-- No external API calls. All inference is local.
 - Fail-closed: any unhandled exception returns a safe LOW fallback dict.
 - Non-discrimination: output fields must describe risk via framework violations only.
+- No external API calls from pipeline logic except via INFERENCE_BACKEND=api.
 """
 from __future__ import annotations
 
@@ -31,6 +31,10 @@ _ANCHORS_PATH = Path(__file__).parent.parent / "schemas" / "framework_anchors.js
 # ---------------------------------------------------------------------------
 # Inference constants
 # ---------------------------------------------------------------------------
+
+INFERENCE_BACKEND = os.getenv("INFERENCE_BACKEND", "local")
+# "local" → use Qwen SLM (existing behaviour, unchanged)
+# "api"   → use Anthropic API (claude-haiku-4-5)
 
 QWEN_MAX_NEW_TOKENS = 1200
 QWEN_TEMPERATURE = 0.1
@@ -83,25 +87,30 @@ _EXPERT_DIMENSIONS: dict[str, list[tuple[str, str]]] = {
 
 # ---------------------------------------------------------------------------
 # Model loading — once at module level, reused for all Experts and Resolution
+# Skipped entirely when INFERENCE_BACKEND=api to avoid unnecessary downloads.
 # ---------------------------------------------------------------------------
 
 _LOCAL_DEV: bool = os.getenv("LOCAL_DEV", "true").lower() in ("true", "1", "yes")
 
-if _LOCAL_DEV:
-    _QWEN_MODEL_ID = "Qwen/Qwen2.5-3B-Instruct"
-    _TORCH_DTYPE = torch.float32
-    _DEVICE = "cpu"
-else:
-    _QWEN_MODEL_ID = os.getenv("QWEN_MODEL_ID", "Qwen/Qwen2.5-7B-Instruct")
-    _TORCH_DTYPE = torch.bfloat16
-    _DEVICE = "cuda"
+if INFERENCE_BACKEND == "local":
+    if _LOCAL_DEV:
+        _QWEN_MODEL_ID = "Qwen/Qwen2.5-3B-Instruct"
+        _TORCH_DTYPE = torch.float32
+        _DEVICE = "cpu"
+    else:
+        _QWEN_MODEL_ID = os.getenv("QWEN_MODEL_ID", "Qwen/Qwen2.5-7B-Instruct")
+        _TORCH_DTYPE = torch.bfloat16
+        _DEVICE = "cuda"
 
-qwen_tokenizer = AutoTokenizer.from_pretrained(_QWEN_MODEL_ID)
-qwen_model = AutoModelForCausalLM.from_pretrained(
-    _QWEN_MODEL_ID,
-    torch_dtype=_TORCH_DTYPE,
-)
-qwen_model = qwen_model.to(_DEVICE)
+    qwen_tokenizer = AutoTokenizer.from_pretrained(_QWEN_MODEL_ID)
+    qwen_model = AutoModelForCausalLM.from_pretrained(
+        _QWEN_MODEL_ID,
+        torch_dtype=_TORCH_DTYPE,
+    )
+    qwen_model = qwen_model.to(_DEVICE)
+else:
+    qwen_tokenizer = None
+    qwen_model = None
 
 # ---------------------------------------------------------------------------
 # Anchors — loaded once at module level
@@ -234,6 +243,16 @@ def run_expert(expert_id: str, input_data: dict) -> dict:
     the Multilingual Jailbreak dimension is forced to LOW after inference and
     expert_risk_level is recomputed.
     """
+    if INFERENCE_BACKEND == "api":
+        api_key = os.getenv("ANTHROPIC_API_KEY", "")
+        if not api_key:
+            raise ValueError(
+                "ANTHROPIC_API_KEY is not set. Set it in your .env file or environment "
+                "before using INFERENCE_BACKEND=api."
+            )
+    else:
+        api_key = ""
+
     try:
         system_prompt = build_system_prompt(expert_id, input_data)
 
@@ -249,29 +268,40 @@ def run_expert(expert_id: str, input_data: dict) -> dict:
         else:
             user_content = "translated_text: " + str(input_data.get("translated_text", ""))
 
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content},
-        ]
-
-        text = qwen_tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-        inputs = qwen_tokenizer([text], return_tensors="pt").to(qwen_model.device)
-
-        with torch.no_grad():
-            output_ids = qwen_model.generate(
-                **inputs,
-                max_new_tokens=QWEN_MAX_NEW_TOKENS,
-                temperature=QWEN_TEMPERATURE,
-                do_sample=False,
+        if INFERENCE_BACKEND == "api":
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model="claude-haiku-4-5",
+                max_tokens=4096,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_content}],
             )
+            raw_output = message.content[0].text
+        else:
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ]
 
-        input_length = inputs.input_ids.shape[1]
-        raw_output = qwen_tokenizer.decode(
-            output_ids[0][input_length:],
-            skip_special_tokens=True,
-        )
+            text = qwen_tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            inputs = qwen_tokenizer([text], return_tensors="pt").to(qwen_model.device)
+
+            with torch.no_grad():
+                output_ids = qwen_model.generate(
+                    **inputs,
+                    max_new_tokens=QWEN_MAX_NEW_TOKENS,
+                    temperature=QWEN_TEMPERATURE,
+                    do_sample=False,
+                )
+
+            input_length = inputs.input_ids.shape[1]
+            raw_output = qwen_tokenizer.decode(
+                output_ids[0][input_length:],
+                skip_special_tokens=True,
+            )
 
         cleaned = _clean_json_output(raw_output)
         result = json.loads(cleaned)

@@ -6,6 +6,8 @@ All tests use LOCAL_DEV=true (CPU, no GPU). No external API calls.
 from __future__ import annotations
 
 import copy
+import json
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -354,3 +356,142 @@ def test_run_expert_fallback_on_json_parse_failure(monkeypatch):
     assert len(result["dimension_scores"]) == 5  # Expert 1 has 5 dimensions
     assert all(s["severity"] == "LOW" for s in result["dimension_scores"])
     assert result["expert_id"] == "expert_1"
+
+
+# ---------------------------------------------------------------------------
+# Test 12: INFERENCE_BACKEND=api with no API key raises ValueError
+# ---------------------------------------------------------------------------
+
+
+def test_run_expert_api_backend_missing_key_raises(monkeypatch):
+    """When INFERENCE_BACKEND=api and ANTHROPIC_API_KEY is empty, raise ValueError."""
+    monkeypatch.setattr(eb, "INFERENCE_BACKEND", "api")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        run_expert("expert_1", _base_input())
+
+
+# ---------------------------------------------------------------------------
+# Test 13: INFERENCE_BACKEND=api with key calls anthropic.Anthropic, not tokenizer
+# ---------------------------------------------------------------------------
+
+
+def _make_valid_api_response(expert_id: str = "expert_1") -> str:
+    """Return a minimal valid JSON expert response for the api mock."""
+    dims = [
+        {
+            "dimension": "Jailbreak Resistance",
+            "criticality": "CORE",
+            "severity": "LOW",
+            "triggered_signals": [],
+            "evidence_quote": "",
+            "reasoning": "No issues detected.",
+            "evidence_anchor": {"framework": "", "section": "", "provision": ""},
+        },
+        {
+            "dimension": "Prompt Injection Robustness",
+            "criticality": "CORE",
+            "severity": "LOW",
+            "triggered_signals": [],
+            "evidence_quote": "",
+            "reasoning": "No issues detected.",
+            "evidence_anchor": {"framework": "", "section": "", "provision": ""},
+        },
+        {
+            "dimension": "Multilingual Jailbreak",
+            "criticality": "CORE",
+            "severity": "LOW",
+            "triggered_signals": [],
+            "evidence_quote": "",
+            "reasoning": "No issues detected.",
+            "evidence_anchor": {"framework": "", "section": "", "provision": ""},
+        },
+        {
+            "dimension": "Multi-turn Stability",
+            "criticality": "IMPORTANT",
+            "severity": "LOW",
+            "triggered_signals": [],
+            "evidence_quote": "",
+            "reasoning": "No issues detected.",
+            "evidence_anchor": {"framework": "", "section": "", "provision": ""},
+        },
+        {
+            "dimension": "Tool/Agent Manipulation",
+            "criticality": "IMPORTANT",
+            "severity": "LOW",
+            "triggered_signals": [],
+            "evidence_quote": "",
+            "reasoning": "No issues detected.",
+            "evidence_anchor": {"framework": "", "section": "", "provision": ""},
+        },
+    ]
+    return json.dumps({
+        "expert_id": expert_id,
+        "expert_name": "Security & Adversarial Robustness",
+        "submission_id": "eval-20260101-001",
+        "evaluated_at": "2026-01-01T00:00:00Z",
+        "dimension_scores": dims,
+        "expert_risk_level": "LOW",
+        "aggregation_trace": "Rule 5 fired: no HIGH or MEDIUM severities detected.",
+        "multilingual_flag_applied": False,
+    })
+
+
+def test_run_expert_api_backend_calls_anthropic_not_tokenizer(monkeypatch):
+    """When INFERENCE_BACKEND=api and key is set, calls anthropic.Anthropic, not tokenizer."""
+    monkeypatch.setattr(eb, "INFERENCE_BACKEND", "api")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc123")
+
+    # Build mock anthropic client that returns a valid JSON response
+    mock_content = MagicMock()
+    mock_content.text = _make_valid_api_response("expert_1")
+    mock_message = MagicMock()
+    mock_message.content = [mock_content]
+    mock_client = MagicMock()
+    mock_client.messages.create.return_value = mock_message
+    mock_anthropic_cls = MagicMock(return_value=mock_client)
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "Anthropic", mock_anthropic_cls)
+
+    # Capture tokenizer call count before
+    tokenizer_call_count_before = eb.qwen_tokenizer.apply_chat_template.call_count
+
+    result = run_expert("expert_1", _base_input())
+
+    # anthropic.Anthropic must have been called
+    mock_anthropic_cls.assert_called_once_with(api_key="test-key-abc123")
+    mock_client.messages.create.assert_called_once()
+
+    # local tokenizer must NOT have been called during this invocation
+    assert eb.qwen_tokenizer.apply_chat_template.call_count == tokenizer_call_count_before
+
+    assert result["expert_risk_level"] == "LOW"
+    assert "dimension_scores" in result
+
+
+# ---------------------------------------------------------------------------
+# Test 14: INFERENCE_BACKEND=local never calls anthropic.Anthropic
+# ---------------------------------------------------------------------------
+
+
+def test_run_expert_local_backend_never_calls_anthropic(monkeypatch):
+    """When INFERENCE_BACKEND=local, the anthropic SDK is never called."""
+    # INFERENCE_BACKEND stays "local" (default) — no monkeypatch needed
+
+    mock_anthropic_cls = MagicMock()
+
+    import anthropic
+    monkeypatch.setattr(anthropic, "Anthropic", mock_anthropic_cls)
+
+    # Make the tokenizer return valid JSON so run_expert completes normally
+    monkeypatch.setattr(
+        eb.qwen_tokenizer,
+        "decode",
+        lambda *args, **kwargs: _make_valid_api_response("expert_1"),
+    )
+
+    run_expert("expert_1", _base_input())
+
+    assert mock_anthropic_cls.call_count == 0
