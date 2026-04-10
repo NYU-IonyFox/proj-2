@@ -93,7 +93,7 @@ def translate_to_english(text: str, source_lang: str) -> tuple[str, float]:
         with torch.no_grad():
             output = _nllb_model.generate(
                 **inputs,
-                forced_bos_token_id=_nllb_tokenizer.lang_code_to_id["eng_Latn"],
+                forced_bos_token_id=_nllb_tokenizer.convert_tokens_to_ids("eng_Latn"),
                 max_length=512,
                 return_dict_in_generate=True,
                 output_scores=True,
