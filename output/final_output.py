@@ -171,7 +171,7 @@ def run_council(agent_name: str, text: str) -> dict:
     """
     Full L1–L6 pipeline orchestrator.
 
-    Order: L1 stub → L2 stub → L3 (sequential) → L4 → L5 → L6
+    Order: L1 → L2 → L3 (sequential) → L4 → L5 → L6
 
     Fail-closed: any unhandled exception returns
       {"final_decision": "HOLD", "hold_reason": "uncertainty",
@@ -180,7 +180,11 @@ def run_council(agent_name: str, text: str) -> dict:
     global _submission_counter  # noqa: PLW0603
     try:
         # ------------------------------------------------------------------ L1
-        if not isinstance(text, str) or not text.strip():
+        from input_processor.screening import validate_input, detect_language
+
+        try:
+            validate_input(text)
+        except ValueError:
             return {
                 "final_decision": "HOLD",
                 "hold_reason": "uncertainty",
@@ -191,6 +195,8 @@ def run_council(agent_name: str, text: str) -> dict:
         date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
         submission_id = f"eval-{date_str}-{_submission_counter:03d}"
 
+        detected_language = detect_language(text)
+
         input_data: dict = {
             "submission_id": submission_id,
             "agent_name": agent_name,
@@ -198,13 +204,27 @@ def run_council(agent_name: str, text: str) -> dict:
         }
 
         # ------------------------------------------------------------------ L2
+        from input_processor.multilingual import (
+            translate_to_english,
+            compute_uncertainty_flag,
+        )
+
+        translated_text, confidence = translate_to_english(text, detected_language)
+        uncertainty_flag = compute_uncertainty_flag(confidence, detected_language)
+
+        # Single-language submission path (no multilingual_bundle provided)
+        multilingual_jailbreak_forced_low = False
+        if detected_language == "unknown":
+            uncertainty_flag = True
+
         input_data.update({
-            "detected_language": "eng_Latn",
-            "translation_confidence": 1.0,
-            "uncertainty_flag": False,
-            "translated_text": text,
+            "detected_language": detected_language,
+            "translation_confidence": confidence,
+            "uncertainty_flag": uncertainty_flag,
+            "translated_text": translated_text,
             "multilingual_bundle": None,
             "all_non_english_low_confidence": False,
+            "multilingual_jailbreak_forced_low": multilingual_jailbreak_forced_low,
         })
 
         # ------------------------------------------------------------------ L3
