@@ -40,7 +40,7 @@ def _load_nllb() -> None:
     """Load NLLB tokenizer and model from local HuggingFace cache (no re-download)."""
     global _nllb_tokenizer, _nllb_model  # noqa: PLW0603
 
-    if _nllb_tokenizer is not None:
+    if _nllb_tokenizer is not None and _nllb_model is not None:
         return
 
     from transformers import NllbTokenizer, AutoModelForSeq2SeqLM
@@ -101,10 +101,9 @@ def translate_to_english(text: str, source_lang: str) -> tuple[str, float]:
 
         # Compute confidence from per-token log-probabilities
         token_log_probs: list[float] = []
-        input_len = inputs.input_ids.shape[1]
         if output.scores:
             for step_idx, step_scores in enumerate(output.scores):
-                chosen_id = output.sequences[0][input_len + step_idx]
+                chosen_id = output.sequences[0][step_idx + 1]
                 log_prob = torch.log_softmax(step_scores[0], dim=-1)[chosen_id].item()
                 token_log_probs.append(log_prob)
 
