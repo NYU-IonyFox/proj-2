@@ -8,7 +8,7 @@
 
 ---
 
-## The Problem
+## Our Mission
 
 Deploying AI in UN contexts is not a generic software problem. The stakes are different — decisions affect humanitarian operations, vulnerable populations, and the institutional credibility of the United Nations itself.
 
