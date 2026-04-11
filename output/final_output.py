@@ -245,7 +245,7 @@ def run_council(agent_name: str, text: str) -> dict:
 
             input_data.update({
                 "detected_language": "eng_Latn",
-                "translation_confidence": confidence,
+                "translation_confidence": 1.0 if "EN" in parsed_segments else confidence,
                 "uncertainty_flag": uncertainty_flag,
                 "translated_text": translated_text,
                 "multilingual_bundle": bundle,

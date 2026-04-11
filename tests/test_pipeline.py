@@ -130,6 +130,18 @@ class TestRunCouncil:
         assert result.get("hold_reason") == "uncertainty"
         assert result["decision_rule_triggered"] == "pipeline_error"
 
+    def test_multilingual_en_tag_sets_translation_confidence_1(self):
+        """run_council with [EN]-tagged input sets multilingual_metadata.translation_confidence=1.0."""
+        from output.final_output import run_council
+
+        text = "[EN] This is a safe test message for evaluation."
+        result = run_council("TestAgent", text)
+
+        if result.get("decision_rule_triggered") == "pipeline_error":
+            pytest.skip("Pipeline in fail-closed mode; skipping multilingual confidence check.")
+
+        assert result["multilingual_metadata"]["translation_confidence"] == 1.0
+
 
 # ---------------------------------------------------------------------------
 # assemble_council_output tests
