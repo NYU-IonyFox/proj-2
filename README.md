@@ -8,7 +8,7 @@
 
 ---
 
-## Our Mission
+## The Problem
 
 Deploying AI in UN contexts is not a generic software problem. The stakes are different — decisions affect humanitarian operations, vulnerable populations, and the institutional credibility of the United Nations itself.
 
@@ -18,9 +18,9 @@ Our mission is to make pre-deployment AI evaluation transparent, auditable, and 
 
 ## Quick Start for Evaluators
 
-This system supports two inference backends. **Choose one before running.**
+This system supports two inference backends. **Follow these steps in order.**
 
-### Option A — Anthropic API (recommended for evaluation environments)
+### Step 1: Clone and install
 
 ```bash
 git clone https://github.com/NYU-IonyFox/proj-2.git
@@ -28,19 +28,49 @@ cd proj-2
 pip install -r requirements.txt
 ```
 
-Set environment variables:
+### Step 2: Create your .env file
 
 ```bash
 # Linux / macOS
-export INFERENCE_BACKEND=api
-export ANTHROPIC_API_KEY=your_key_here
+cp .env.example .env
 
-# Windows (Anaconda Prompt)
-set INFERENCE_BACKEND=api
-set ANTHROPIC_API_KEY=your_key_here
+# Windows
+copy .env.example .env
 ```
 
-Run evaluation:
+Open `.env` in any text editor. It will look like this:
+
+```
+QWEN_MODEL_ID=Qwen/Qwen2.5-7B-Instruct
+LOCAL_DEV=true
+UNCERTAINTY_THRESHOLD=0.60
+INFERENCE_BACKEND=local
+ANTHROPIC_API_KEY=
+```
+
+### Option A — Anthropic API (recommended for evaluation environments)
+
+Edit `.env` to set:
+
+```
+INFERENCE_BACKEND=api
+ANTHROPIC_API_KEY=your_key_here
+```
+
+The evaluator supplies their own Anthropic API key. No key is hardcoded in the repository.
+
+### Option B — Local SLM (requires GPU, 16 GB+ VRAM recommended)
+
+Edit `.env` to set:
+
+```
+INFERENCE_BACKEND=local
+LOCAL_DEV=false
+```
+
+Models download automatically from HuggingFace on first run. Set `HF_TOKEN` if you encounter rate limits.
+
+### Step 3: Run evaluation
 
 ```bash
 # Linux / macOS
@@ -49,21 +79,6 @@ python -m main --input path/to/agent_output.txt
 # Windows
 python -m main --input path\to\agent_output.txt
 ```
-
-### Option B — Local SLM (requires GPU, 16 GB+ VRAM recommended)
-
-```bash
-# Linux / macOS
-export INFERENCE_BACKEND=local
-export LOCAL_DEV=false          # uses Qwen2.5-7B-Instruct
-# export LOCAL_DEV=true         # uses Qwen2.5-3B-Instruct for CPU testing
-
-# Windows
-set INFERENCE_BACKEND=local
-set LOCAL_DEV=false
-```
-
-Models download automatically from HuggingFace on first run. Set `HF_TOKEN` if you encounter rate limits.
 
 ### FastAPI server
 
