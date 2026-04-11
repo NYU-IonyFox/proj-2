@@ -60,6 +60,7 @@ def assemble_council_output(
     council_output = {
         "submission_id": submission_id,
         "agent_name": agent_name,
+        "source_repo_url": input_data.get("source_repo_url"),
         "evaluated_at": datetime.now(timezone.utc).isoformat(),
         "final_decision": resolution_result.get("final_decision"),
         "decision_tier": resolution_result.get("decision_tier"),
@@ -168,7 +169,9 @@ def write_audit_log(council_output: dict, input_data: dict) -> str:
 # Task 3 — run_council()
 # ---------------------------------------------------------------------------
 
-def run_council(agent_name: str, text: str) -> dict:
+def run_council(agent_name: str = "",
+                text: str = None,
+                repo_url: str = None) -> dict:
     """
     Full L1–L6 pipeline orchestrator.
 
@@ -180,6 +183,17 @@ def run_council(agent_name: str, text: str) -> dict:
     """
     global _submission_counter  # noqa: PLW0603
     try:
+        if repo_url is not None:
+            from input_processor.repo_analyzer import fetch_repo_description
+            repo_data = fetch_repo_description(repo_url)
+            text = repo_data["structured_description"]
+            agent_name = repo_data["agent_name"]
+            source_repo_url = repo_url
+        elif text is not None:
+            source_repo_url = None
+        else:
+            raise ValueError("Either text or repo_url must be provided")
+
         # ------------------------------------------------------------------ L1
         from input_processor.screening import (
             validate_input,
@@ -205,6 +219,7 @@ def run_council(agent_name: str, text: str) -> dict:
             "submission_id": submission_id,
             "agent_name": agent_name,
             "raw_text": text,
+            "source_repo_url": source_repo_url,
         }
 
         parsed_segments = parse_multilingual_input(text)

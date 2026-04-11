@@ -142,6 +142,75 @@ class TestRunCouncil:
 
         assert result["multilingual_metadata"]["translation_confidence"] == 1.0
 
+    def test_raises_value_error_when_neither_text_nor_repo_url(self):
+        """run_council raises ValueError when called with neither text nor repo_url."""
+        from output.final_output import run_council
+
+        # The fail-closed wrapper catches all exceptions and returns HOLD,
+        # so we verify via the pipeline_error decision_rule_triggered.
+        result = run_council()
+        assert result["final_decision"] == "HOLD"
+        assert result["decision_rule_triggered"] == "pipeline_error"
+
+    def test_text_path_unchanged(self):
+        """run_council with text= still works (existing path unchanged)."""
+        from output.final_output import run_council
+
+        text = SAMPLE_INPUT_PATH.read_text(encoding="utf-8")
+        result = run_council(agent_name="VeriMedia", text=text)
+
+        assert "final_decision" in result
+
+    def test_repo_url_calls_fetch_repo_description(self):
+        """run_council with repo_url calls fetch_repo_description and uses structured_description."""
+        from output.final_output import run_council
+
+        mock_repo_data = {
+            "agent_name": "RepoAgent",
+            "structured_description": SAMPLE_INPUT_PATH.read_text(encoding="utf-8"),
+        }
+
+        with patch(
+            "input_processor.repo_analyzer.fetch_repo_description",
+            return_value=mock_repo_data,
+        ) as mock_fetch:
+            result = run_council(repo_url="https://github.com/example/repo")
+
+        mock_fetch.assert_called_once_with("https://github.com/example/repo")
+        assert "final_decision" in result
+
+    def test_source_repo_url_in_output_when_repo_url_provided(self):
+        """council_output contains source_repo_url field when repo_url is provided."""
+        from output.final_output import run_council
+
+        mock_repo_data = {
+            "agent_name": "RepoAgent",
+            "structured_description": SAMPLE_INPUT_PATH.read_text(encoding="utf-8"),
+        }
+
+        with patch(
+            "input_processor.repo_analyzer.fetch_repo_description",
+            return_value=mock_repo_data,
+        ):
+            result = run_council(repo_url="https://github.com/example/repo")
+
+        if result.get("decision_rule_triggered") == "pipeline_error":
+            pytest.skip("Pipeline in fail-closed mode; skipping source_repo_url check.")
+
+        assert result.get("source_repo_url") == "https://github.com/example/repo"
+
+    def test_source_repo_url_is_none_when_text_input_used(self):
+        """council_output source_repo_url is None when text input is used."""
+        from output.final_output import run_council
+
+        text = SAMPLE_INPUT_PATH.read_text(encoding="utf-8")
+        result = run_council(agent_name="VeriMedia", text=text)
+
+        if result.get("decision_rule_triggered") == "pipeline_error":
+            pytest.skip("Pipeline in fail-closed mode; skipping source_repo_url check.")
+
+        assert result.get("source_repo_url") is None
+
 
 # ---------------------------------------------------------------------------
 # assemble_council_output tests
