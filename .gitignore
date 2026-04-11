@@ -2,6 +2,7 @@ models/*
 !models/.gitkeep
 audit_logs/*
 !audit_logs/.gitkeep
+outputs/
 __pycache__/
 .env
 *.pyc

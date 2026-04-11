@@ -11,6 +11,7 @@ GLOBAL CONSTRAINTS:
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -183,6 +184,7 @@ def run_council(agent_name: str = "",
     """
     global _submission_counter  # noqa: PLW0603
     try:
+        repo_data = None
         if repo_url is not None:
             from input_processor.repo_analyzer import fetch_repo_description
             repo_data = fetch_repo_description(repo_url)
@@ -320,6 +322,23 @@ def run_council(agent_name: str = "",
             resolution_result,
         )
         write_audit_log(council_output, input_data)
+
+        # Report generation (fail-closed: never crash the pipeline)
+        try:
+            from output.report_generator import generate_report, save_report
+            _structured_desc = repo_data.get("structured_description") \
+                if repo_url is not None else None
+            narrative_report = generate_report(
+                council_output,
+                structured_description=_structured_desc,
+            )
+            council_output["narrative_report"] = narrative_report
+            report_path = save_report(narrative_report, submission_id)
+            if report_path:
+                council_output["report_path"] = str(report_path)
+        except Exception as _e:
+            logging.warning(f"Report generation failed: {_e}")
+            council_output["narrative_report"] = ""
 
         return council_output
 

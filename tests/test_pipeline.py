@@ -211,6 +211,24 @@ class TestRunCouncil:
 
         assert result.get("source_repo_url") is None
 
+    def test_result_contains_narrative_report_key(self):
+        """run_council result always contains a narrative_report key."""
+        from output.final_output import run_council
+
+        text = SAMPLE_INPUT_PATH.read_text(encoding="utf-8")
+        result = run_council("VeriMedia", text)
+
+        assert "narrative_report" in result
+
+    def test_narrative_report_is_string(self):
+        """run_council narrative_report value is a string (may be empty)."""
+        from output.final_output import run_council
+
+        text = SAMPLE_INPUT_PATH.read_text(encoding="utf-8")
+        result = run_council("VeriMedia", text)
+
+        assert isinstance(result.get("narrative_report", ""), str)
+
 
 # ---------------------------------------------------------------------------
 # assemble_council_output tests
