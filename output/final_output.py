@@ -72,6 +72,7 @@ def assemble_council_output(
             "uncertainty_flag": input_data.get("uncertainty_flag", False),
             "all_non_english_low_confidence": all_non_english_low,
         },
+        "multilingual_bundle": input_data.get("multilingual_bundle"),
         "council_reasoning": resolution_result.get("council_reasoning", ""),
         "governance_action": resolution_result.get("governance_action", {}),
         "audit_log_reference": audit_ref,
@@ -180,7 +181,12 @@ def run_council(agent_name: str, text: str) -> dict:
     global _submission_counter  # noqa: PLW0603
     try:
         # ------------------------------------------------------------------ L1
-        from input_processor.screening import validate_input, detect_language
+        from input_processor.screening import (
+            validate_input,
+            detect_language,
+            parse_multilingual_input,
+            LANG_TAG_TO_NLLB,
+        )
 
         try:
             validate_input(text)
@@ -195,37 +201,76 @@ def run_council(agent_name: str, text: str) -> dict:
         date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
         submission_id = f"eval-{date_str}-{_submission_counter:03d}"
 
-        detected_language = detect_language(text)
-
         input_data: dict = {
             "submission_id": submission_id,
             "agent_name": agent_name,
             "raw_text": text,
         }
 
+        parsed_segments = parse_multilingual_input(text)
+
         # ------------------------------------------------------------------ L2
         from input_processor.multilingual import (
             translate_to_english,
             compute_uncertainty_flag,
+            build_multilingual_bundle,
+            assess_bundle_status,
         )
 
-        translated_text, confidence = translate_to_english(text, detected_language)
-        uncertainty_flag = compute_uncertainty_flag(confidence, detected_language)
+        if parsed_segments is not None:
+            # Multilingual path — tagged [XX] input
+            # Extract English segment (no translation needed) or translate first segment
+            if "EN" in parsed_segments:
+                translated_text = parsed_segments["EN"]
+                confidence = 1.0
+                uncertainty_flag = False
+            else:
+                first_tag, first_text = next(iter(parsed_segments.items()))
+                first_nllb = LANG_TAG_TO_NLLB.get(first_tag, "unknown")
+                translated_text, confidence = translate_to_english(first_text, first_nllb)
+                uncertainty_flag = compute_uncertainty_flag(confidence, first_nllb)
 
-        # Single-language submission path (no multilingual_bundle provided)
-        multilingual_jailbreak_forced_low = False
-        if detected_language == "unknown":
-            uncertainty_flag = True
+            # Build NLLB-keyed dict for non-English segments
+            nllb_non_english = {
+                LANG_TAG_TO_NLLB[tag]: seg_text
+                for tag, seg_text in parsed_segments.items()
+                if tag != "EN" and tag in LANG_TAG_TO_NLLB
+            }
 
-        input_data.update({
-            "detected_language": detected_language,
-            "translation_confidence": confidence,
-            "uncertainty_flag": uncertainty_flag,
-            "translated_text": translated_text,
-            "multilingual_bundle": None,
-            "all_non_english_low_confidence": False,
-            "multilingual_jailbreak_forced_low": multilingual_jailbreak_forced_low,
-        })
+            bundle = build_multilingual_bundle(nllb_non_english)
+            status = assess_bundle_status(
+                bundle,
+                english_excluded=("EN" not in parsed_segments and len(bundle) == 0),
+            )
+
+            input_data.update({
+                "detected_language": "eng_Latn",
+                "translation_confidence": confidence,
+                "uncertainty_flag": uncertainty_flag,
+                "translated_text": translated_text,
+                "multilingual_bundle": bundle,
+                "all_non_english_low_confidence": status["all_non_english_low_confidence"],
+                "multilingual_jailbreak_forced_low": status["multilingual_jailbreak_forced_low"],
+            })
+        else:
+            # Single-language path — existing behaviour unchanged
+            detected_language = detect_language(text)
+            translated_text, confidence = translate_to_english(text, detected_language)
+            uncertainty_flag = compute_uncertainty_flag(confidence, detected_language)
+
+            multilingual_jailbreak_forced_low = False
+            if detected_language == "unknown":
+                uncertainty_flag = True
+
+            input_data.update({
+                "detected_language": detected_language,
+                "translation_confidence": confidence,
+                "uncertainty_flag": uncertainty_flag,
+                "translated_text": translated_text,
+                "multilingual_bundle": None,
+                "all_non_english_low_confidence": False,
+                "multilingual_jailbreak_forced_low": multilingual_jailbreak_forced_low,
+            })
 
         # ------------------------------------------------------------------ L3
         from experts.expert_1_security import run_expert_1

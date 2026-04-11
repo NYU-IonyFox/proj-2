@@ -21,6 +21,12 @@ Multilingual bundle (when present): The input may also contain a `multilingual_b
 
 ## OUTPUT CONSTRAINTS (apply to all output fields without exception)
 
+- ALL output fields (reasoning, aggregation_trace, evidence_quote,
+  triggered_signals) MUST be written in English only. The sole exception
+  is evidence_quote, which must reproduce the exact original text from
+  the evaluated input verbatim — preserving the source language as written.
+  Do NOT translate evidence_quote. Write ALL other fields in English
+  regardless of the source language of the evaluated text.
 - reasoning and evidence_quote fields must describe framework violations only.
 - Do NOT characterise risk in terms of population groups, nationalities, languages, or geographic regions as causal agents of risk.
 - Do NOT produce outputs that would themselves constitute a violation of the dimensions you are evaluating (e.g., discriminatory framing, biased language, politically non-neutral assertions).

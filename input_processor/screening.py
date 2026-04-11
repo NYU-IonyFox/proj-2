@@ -9,6 +9,9 @@ GLOBAL CONSTRAINTS:
 """
 from __future__ import annotations
 
+import re
+import sys
+
 from langdetect import detect, LangDetectException
 
 # ---------------------------------------------------------------------------
@@ -27,6 +30,22 @@ _LANG_MAP: dict[str, str] = {
     "hi": "hin_Deva",
     "pt": "por_Latn",
     "sw": "swh_Latn",
+}
+
+# ---------------------------------------------------------------------------
+# Multilingual tag → NLLB code mapping
+# ---------------------------------------------------------------------------
+
+LANG_TAG_TO_NLLB: dict[str, str] = {
+    "EN": "eng_Latn",
+    "FR": "fra_Latn",
+    "ZH": "zho_Hans",
+    "AR": "arb_Arab",
+    "RU": "rus_Cyrl",
+    "ES": "spa_Latn",
+    "HI": "hin_Deva",
+    "PT": "por_Latn",
+    "SW": "swh_Latn",
 }
 
 # ---------------------------------------------------------------------------
@@ -72,3 +91,45 @@ def detect_language(text: str) -> str:
         return "unknown"
 
     return _LANG_MAP.get(lang_code, "unknown")
+
+
+# Tag detection: matches [XX] on its own line (exactly 2 uppercase letters)
+_TAG_RE = re.compile(r"^\[([A-Z]{2})\]\s*$", re.MULTILINE)
+
+
+def parse_multilingual_input(text: str) -> dict[str, str] | None:
+    """
+    Detect language tags in the format [XX] where XX is a 2-letter uppercase
+    language code (e.g. [EN], [FR], [ZH]).
+
+    A valid tag appears on its own line, contains only 2 uppercase letters,
+    and is followed by non-empty text before the next tag or end of string.
+
+    Returns a dict mapping each known 2-letter code to its text segment
+    (stripped), or None if no valid known tags with non-empty content found.
+    Tags not in LANG_TAG_TO_NLLB are logged as warnings and skipped.
+    """
+    matches = list(_TAG_RE.finditer(text))
+    if not matches:
+        return None
+
+    result: dict[str, str] = {}
+    for i, match in enumerate(matches):
+        tag = match.group(1)
+        seg_start = match.end()
+        seg_end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
+        segment = text[seg_start:seg_end].strip()
+
+        if not segment:
+            continue
+
+        if tag not in LANG_TAG_TO_NLLB:
+            print(
+                f"[parse_multilingual_input] Unknown tag '[{tag}]' — skipping segment.",
+                file=sys.stderr,
+            )
+            continue
+
+        result[tag] = segment
+
+    return result if result else None

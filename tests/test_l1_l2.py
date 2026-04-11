@@ -350,3 +350,145 @@ class TestAssessBundleStatus:
         ]
         result = assess_bundle_status(bundle, english_excluded=False)
         assert result["all_non_english_low_confidence"] is False
+
+
+# ---------------------------------------------------------------------------
+# L1: parse_multilingual_input
+# ---------------------------------------------------------------------------
+
+
+class TestParseMultilingualInput:
+    def test_returns_none_for_plain_text(self):
+        from input_processor.screening import parse_multilingual_input
+
+        assert parse_multilingual_input("VeriMedia is a content moderation tool.") is None
+
+    def test_splits_en_fr_tagged_text(self):
+        from input_processor.screening import parse_multilingual_input
+
+        text = "[EN]\nVeriMedia is a tool.\n[FR]\nVeriMedia est un outil."
+        result = parse_multilingual_input(text)
+        assert result is not None
+        assert set(result.keys()) == {"EN", "FR"}
+        assert "VeriMedia is a tool." in result["EN"]
+        assert "VeriMedia est un outil." in result["FR"]
+
+    def test_splits_three_language_input(self):
+        from input_processor.screening import parse_multilingual_input
+
+        text = "[EN]\nHello world.\n[FR]\nBonjour monde.\n[AR]\nمرحبا بالعالم."
+        result = parse_multilingual_input(text)
+        assert result is not None
+        assert set(result.keys()) == {"EN", "FR", "AR"}
+        assert result["EN"] == "Hello world."
+        assert result["FR"] == "Bonjour monde."
+        assert result["AR"] == "مرحبا بالعالم."
+
+    def test_skips_unknown_tag_with_warning(self, capsys):
+        from input_processor.screening import parse_multilingual_input
+
+        text = "[EN]\nHello.\n[XX]\nUnknown language text."
+        result = parse_multilingual_input(text)
+        assert result is not None
+        assert "EN" in result
+        assert "XX" not in result
+        captured = capsys.readouterr()
+        assert "XX" in captured.err
+        assert "skipping" in captured.err.lower()
+
+    def test_returns_none_for_invalid_patterns(self):
+        from input_processor.screening import parse_multilingual_input
+
+        # [english] — more than 2 letters; [F] — 1 letter; [123] — digits
+        assert parse_multilingual_input("[english]\nSome text here.") is None
+        assert parse_multilingual_input("[F]\nSome text here.") is None
+        assert parse_multilingual_input("[123]\nSome text here.") is None
+
+    def test_returns_none_for_empty_segments(self):
+        from input_processor.screening import parse_multilingual_input
+
+        # Tag present but no text following it
+        assert parse_multilingual_input("[EN]\n") is None
+
+    def test_returns_none_when_only_unknown_tags(self, capsys):
+        from input_processor.screening import parse_multilingual_input
+
+        text = "[XX]\nOnly unknown tag."
+        result = parse_multilingual_input(text)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# run_council: multilingual bundle integration
+# ---------------------------------------------------------------------------
+
+
+class TestRunCouncilMultilingual:
+    _MOCK_RESOLUTION = {
+        "final_decision": "PASS",
+        "decision_tier": "auto",
+        "decision_rule_triggered": "rule_5",
+        "expert_summary": {"expert_1": "LOW", "expert_2": "LOW", "expert_3": "LOW"},
+        "council_reasoning": "All experts LOW.",
+        "governance_action": {},
+    }
+
+    def _expert_output(self, eid):
+        return {
+            "expert_id": eid,
+            "expert_name": "Test Expert",
+            "expert_risk_level": "LOW",
+            "dimension_scores": [],
+            "aggregation_trace": "Rule 5 fired: no HIGH/MEDIUM. expert_risk_level = LOW.",
+            "multilingual_flag_applied": False,
+        }
+
+    def test_multilingual_tagged_input_produces_bundle(self):
+        """[EN]/[FR] tagged input → multilingual_bundle is a list in council output."""
+        from output.final_output import run_council
+
+        tagged = "[EN]\nVeriMedia is a test tool.\n[FR]\nVeriMedia est un outil de test."
+
+        def mock_translate(text, lang):
+            if lang == "eng_Latn":
+                return text, 1.0
+            return f"translated:{text}", 0.9
+
+        with (
+            patch("input_processor.multilingual.translate_to_english", side_effect=mock_translate),
+            patch("experts.expert_1_security.run_expert_1", return_value=self._expert_output("expert_1")),
+            patch("experts.expert_2_content.run_expert_2", return_value=self._expert_output("expert_2")),
+            patch("experts.expert_3_governance.run_expert_3", return_value=self._expert_output("expert_3")),
+            patch("council.arbitration.run_arbitration", return_value={"expert_levels": {}}),
+            patch("council.resolution.run_resolution", return_value=self._MOCK_RESOLUTION),
+            patch("output.final_output.write_audit_log", return_value="test-audit.json"),
+        ):
+            result = run_council("test_agent", tagged)
+
+        assert "multilingual_bundle" in result
+        assert isinstance(result["multilingual_bundle"], list)
+        # FR segment should appear in bundle
+        langs = [item["source_language"] for item in result["multilingual_bundle"]]
+        assert "fra_Latn" in langs
+
+    def test_plain_text_input_produces_no_bundle(self):
+        """Plain text (no tags) → multilingual_bundle is None in council output."""
+        from output.final_output import run_council
+
+        plain = "VeriMedia is a content moderation tool that processes text data."
+
+        def mock_translate(text, lang):
+            return text, 1.0
+
+        with (
+            patch("input_processor.multilingual.translate_to_english", side_effect=mock_translate),
+            patch("experts.expert_1_security.run_expert_1", return_value=self._expert_output("expert_1")),
+            patch("experts.expert_2_content.run_expert_2", return_value=self._expert_output("expert_2")),
+            patch("experts.expert_3_governance.run_expert_3", return_value=self._expert_output("expert_3")),
+            patch("council.arbitration.run_arbitration", return_value={"expert_levels": {}}),
+            patch("council.resolution.run_resolution", return_value=self._MOCK_RESOLUTION),
+            patch("output.final_output.write_audit_log", return_value="test-audit.json"),
+        ):
+            result = run_council("test_agent", plain)
+
+        assert result.get("multilingual_bundle") is None
