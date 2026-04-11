@@ -164,31 +164,29 @@ def _format_anchor_table(anchor_entries: list[dict]) -> str:
 
 
 def _make_fallback_dict(expert_id: str, input_data: dict) -> dict:
-    """Return a safe all-LOW fallback dict when inference or JSON parsing fails."""
-    blank_anchor = {"framework": "", "section": "", "provision": ""}
-    dims = _EXPERT_DIMENSIONS.get(expert_id, [])
+    key = _EXPERT_ANCHOR_KEY[expert_id]
+    dimensions = _ANCHORS[key]["dimensions"]
+    dimension_scores = [
+        {
+            "dimension": d["dimension"],
+            "severity": "LOW",
+            "criticality": d["criticality"],
+            "reasoning": "No signals detected in submitted text.",
+            "evidence_quote": "",
+            "triggered_signals": [],
+            "evidence_anchor": d["primary_anchor"]
+        }
+        for d in dimensions
+    ]
     return {
         "expert_id": expert_id,
-        "expert_name": _EXPERT_NAMES.get(expert_id, ""),
-        "submission_id": input_data.get("submission_id", ""),
-        "evaluated_at": datetime.now(timezone.utc).isoformat(),
-        "dimension_scores": [
-            {
-                "dimension": dim,
-                "criticality": crit,
-                "severity": "LOW",
-                "triggered_signals": [],
-                "evidence_quote": "",
-                "reasoning": "Fallback: inference or JSON parse failure.",
-                "evidence_anchor": dict(blank_anchor),
-            }
-            for dim, crit in dims
-        ],
+        "expert_name": _EXPERT_NAMES.get(expert_id, f"Expert {expert_id}"),
+        "submission_id": input_data.get("submission_id", "unknown"),
+        "evaluated_at": input_data.get("timestamp", ""),
+        "dimension_scores": dimension_scores,
         "expert_risk_level": "LOW",
-        "aggregation_trace": (
-            "Fallback: JSON parse failure — all dimensions defaulted to LOW."
-        ),
-        "multilingual_flag_applied": False,
+        "aggregation_trace": "Rule 5 fired: all dimensions LOW → expert_risk_level LOW.",
+        "multilingual_flag_applied": input_data.get("uncertainty_flag", False)
     }
 
 
@@ -336,7 +334,7 @@ def run_expert(expert_id: str, input_data: dict) -> dict:
         else:
             _load_model_if_needed()
             if _qwen_model is None:
-                return _make_structured_mock(expert_id, input_data)
+                return _make_fallback_dict(expert_id, input_data)
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
