@@ -10,6 +10,7 @@ GLOBAL CONSTRAINTS:
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -86,7 +87,7 @@ _EXPERT_DIMENSIONS: dict[str, list[tuple[str, str]]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Model loading — once at module level, reused for all Experts and Resolution
+# Model loading — lazy, on first inference call.
 # Skipped entirely when INFERENCE_BACKEND=api to avoid unnecessary downloads.
 # ---------------------------------------------------------------------------
 
@@ -102,19 +103,26 @@ if INFERENCE_BACKEND == "local":
         _TORCH_DTYPE = torch.bfloat16
         _DEVICE = "cuda"
 
+_qwen_tokenizer = None
+_qwen_model = None
+_model_loaded = False
+
+
+def _load_model_if_needed() -> None:
+    global _qwen_tokenizer, _qwen_model, _model_loaded
+    if _model_loaded:
+        return
+    _model_loaded = True
     try:
-        qwen_tokenizer = AutoTokenizer.from_pretrained(_QWEN_MODEL_ID)
-        qwen_model = AutoModelForCausalLM.from_pretrained(
-            _QWEN_MODEL_ID,
-            torch_dtype=_TORCH_DTYPE,
+        _qwen_tokenizer = AutoTokenizer.from_pretrained(_QWEN_MODEL_ID)
+        _qwen_model = AutoModelForCausalLM.from_pretrained(
+            _QWEN_MODEL_ID, torch_dtype=_TORCH_DTYPE
         )
-        qwen_model = qwen_model.to(_DEVICE)
-    except Exception:
-        qwen_tokenizer = None
-        qwen_model = None
-else:
-    qwen_tokenizer = None
-    qwen_model = None
+        _qwen_model = _qwen_model.to(_DEVICE)
+    except Exception as e:
+        logging.warning(f"Model load failed: {e}. Mock output will be used.")
+        _qwen_tokenizer = None
+        _qwen_model = None
 
 # ---------------------------------------------------------------------------
 # Anchors — loaded once at module level
@@ -326,20 +334,21 @@ def run_expert(expert_id: str, input_data: dict) -> dict:
             )
             raw_output = message.content[0].text
         else:
-            if qwen_model is None or qwen_tokenizer is None:
+            _load_model_if_needed()
+            if _qwen_model is None:
                 return _make_structured_mock(expert_id, input_data)
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ]
 
-            text = qwen_tokenizer.apply_chat_template(
+            text = _qwen_tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
-            inputs = qwen_tokenizer([text], return_tensors="pt").to(qwen_model.device)
+            inputs = _qwen_tokenizer([text], return_tensors="pt").to(_qwen_model.device)
 
             with torch.no_grad():
-                output_ids = qwen_model.generate(
+                output_ids = _qwen_model.generate(
                     **inputs,
                     max_new_tokens=QWEN_MAX_NEW_TOKENS,
                     temperature=QWEN_TEMPERATURE,
@@ -347,7 +356,7 @@ def run_expert(expert_id: str, input_data: dict) -> dict:
                 )
 
             input_length = inputs.input_ids.shape[1]
-            raw_output = qwen_tokenizer.decode(
+            raw_output = _qwen_tokenizer.decode(
                 output_ids[0][input_length:],
                 skip_special_tokens=True,
             )

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -346,8 +347,9 @@ def test_post_processing_order_escalation_before_evidence_guard():
 
 def test_run_expert_fallback_on_json_parse_failure(monkeypatch):
     """Mock the model to return malformed JSON; run_expert must return safe fallback."""
+    eb._load_model_if_needed()  # ensure _qwen_tokenizer is initialised via conftest mocks
     # Make the tokenizer's decode return invalid JSON
-    monkeypatch.setattr(eb.qwen_tokenizer, "decode",
+    monkeypatch.setattr(eb._qwen_tokenizer, "decode",
                         lambda *args, **kwargs: "this is not valid { json")
 
     result = run_expert("expert_1", _base_input())
@@ -441,6 +443,7 @@ def _make_valid_api_response(expert_id: str = "expert_1") -> str:
 
 def test_run_expert_api_backend_calls_anthropic_not_tokenizer(monkeypatch):
     """When INFERENCE_BACKEND=api and key is set, calls anthropic.Anthropic, not tokenizer."""
+    eb._load_model_if_needed()  # ensure _qwen_tokenizer is initialised via conftest mocks
     monkeypatch.setattr(eb, "INFERENCE_BACKEND", "api")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key-abc123")
 
@@ -457,7 +460,7 @@ def test_run_expert_api_backend_calls_anthropic_not_tokenizer(monkeypatch):
     monkeypatch.setattr(anthropic, "Anthropic", mock_anthropic_cls)
 
     # Capture tokenizer call count before
-    tokenizer_call_count_before = eb.qwen_tokenizer.apply_chat_template.call_count
+    tokenizer_call_count_before = eb._qwen_tokenizer.apply_chat_template.call_count
 
     result = run_expert("expert_1", _base_input())
 
@@ -466,7 +469,7 @@ def test_run_expert_api_backend_calls_anthropic_not_tokenizer(monkeypatch):
     mock_client.messages.create.assert_called_once()
 
     # local tokenizer must NOT have been called during this invocation
-    assert eb.qwen_tokenizer.apply_chat_template.call_count == tokenizer_call_count_before
+    assert eb._qwen_tokenizer.apply_chat_template.call_count == tokenizer_call_count_before
 
     assert result["expert_risk_level"] == "LOW"
     assert "dimension_scores" in result
@@ -479,6 +482,7 @@ def test_run_expert_api_backend_calls_anthropic_not_tokenizer(monkeypatch):
 
 def test_run_expert_local_backend_never_calls_anthropic(monkeypatch):
     """When INFERENCE_BACKEND=local, the anthropic SDK is never called."""
+    eb._load_model_if_needed()  # ensure _qwen_tokenizer is initialised via conftest mocks
     # INFERENCE_BACKEND stays "local" (default) — no monkeypatch needed
 
     mock_anthropic_cls = MagicMock()
@@ -488,7 +492,7 @@ def test_run_expert_local_backend_never_calls_anthropic(monkeypatch):
 
     # Make the tokenizer return valid JSON so run_expert completes normally
     monkeypatch.setattr(
-        eb.qwen_tokenizer,
+        eb._qwen_tokenizer,
         "decode",
         lambda *args, **kwargs: _make_valid_api_response("expert_1"),
     )
@@ -533,9 +537,10 @@ def test_import_succeeds_when_model_loading_fails(monkeypatch):
 
 
 def test_run_expert_returns_mock_when_model_unavailable(monkeypatch):
-    """When qwen_model and qwen_tokenizer are None, run_expert returns structured mock."""
-    monkeypatch.setattr(eb, "qwen_model", None)
-    monkeypatch.setattr(eb, "qwen_tokenizer", None)
+    """When _qwen_model and _qwen_tokenizer are None, run_expert returns structured mock."""
+    monkeypatch.setattr(eb, "_qwen_model", None)
+    monkeypatch.setattr(eb, "_qwen_tokenizer", None)
+    monkeypatch.setattr(eb, "_model_loaded", True)  # prevent lazy reload overwriting the None
 
     result = run_expert("expert_1", _base_input())
 
@@ -577,4 +582,91 @@ def test_make_structured_mock_reasoning_no_fallback_word():
     for score in result["dimension_scores"]:
         assert "Fallback" not in score["reasoning"], (
             f"'Fallback' found in reasoning for dimension '{score['dimension']}'"
+        )
+
+
+# ---------------------------------------------------------------------------
+# STEP 4 — Test 19: import succeeds when AutoTokenizer / AutoModelForCausalLM raise OSError
+# ---------------------------------------------------------------------------
+
+
+def test_import_succeeds_when_from_pretrained_raises_oserror():
+    """Importing run_expert must succeed even when both from_pretrained calls raise OSError."""
+    from unittest.mock import patch
+    import sys
+
+    for key in list(sys.modules.keys()):
+        if "experts.expert_base" in key or key == "experts.expert_base":
+            del sys.modules[key]
+
+    with patch("transformers.AutoTokenizer.from_pretrained", side_effect=OSError("no model")):
+        with patch(
+            "transformers.AutoModelForCausalLM.from_pretrained",
+            side_effect=OSError("no model"),
+        ):
+            from experts.expert_base import run_expert as _re  # noqa: F401 — must not raise
+
+    # Restore original module so later tests use the conftest-mocked version
+    for key in list(sys.modules.keys()):
+        if "experts.expert_base" in key or key == "experts.expert_base":
+            del sys.modules[key]
+    import experts.expert_base  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# STEP 4 — Test 20: run_expert returns required fields when model load fails
+# ---------------------------------------------------------------------------
+
+
+def test_run_expert_returns_required_fields_when_model_load_fails(monkeypatch):
+    """Simulate a failed model load; run_expert must return a complete LOW-risk mock dict."""
+
+    def _simulate_failed_load():
+        # Mirrors what _load_model_if_needed does when from_pretrained raises
+        eb._model_loaded = True
+        eb._qwen_tokenizer = None
+        eb._qwen_model = None
+
+    monkeypatch.setattr(eb, "_model_loaded", False)
+    monkeypatch.setattr(eb, "_load_model_if_needed", _simulate_failed_load)
+
+    result = run_expert("expert_1", _base_input())
+
+    required_keys = {
+        "expert_id",
+        "expert_name",
+        "submission_id",
+        "evaluated_at",
+        "dimension_scores",
+        "expert_risk_level",
+        "aggregation_trace",
+        "multilingual_flag_applied",
+    }
+    assert required_keys.issubset(result.keys())
+    assert result["expert_risk_level"] == "LOW"
+
+
+# ---------------------------------------------------------------------------
+# STEP 4 — Test 21: _make_structured_mock dimension count matches framework_anchors.json
+# ---------------------------------------------------------------------------
+
+
+def test_make_structured_mock_dimension_count_matches_anchors():
+    """scored_dimensions length must equal the dimensions array in framework_anchors.json."""
+    anchors_path = (
+        Path(__file__).parent.parent / "schemas" / "framework_anchors.json"
+    )
+    anchors = json.loads(anchors_path.read_text(encoding="utf-8"))
+
+    cases = [
+        ("expert_1", "expert_1_security"),
+        ("expert_2", "expert_2_content"),
+        ("expert_3", "expert_3_governance"),
+    ]
+    for expert_id, anchor_key in cases:
+        expected = len(anchors[anchor_key]["dimensions"])
+        result = _make_structured_mock(expert_id, _base_input())
+        actual = len(result["dimension_scores"])
+        assert actual == expected, (
+            f"{expert_id}: expected {expected} dimensions from anchors, got {actual}"
         )
