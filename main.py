@@ -79,4 +79,8 @@ def _cli() -> None:
 
 
 if __name__ == "__main__":
-    _cli()
+    if "--input" in sys.argv:
+        _cli()
+    else:
+        import uvicorn
+        uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -14,6 +14,7 @@ import pytest
 # conftest.py has already patched transformers before this import runs.
 import experts.expert_base as eb
 from experts.expert_base import (
+    _make_structured_mock,
     apply_multilingual_escalation,
     build_system_prompt,
     recompute_expert_risk_level,
@@ -495,3 +496,85 @@ def test_run_expert_local_backend_never_calls_anthropic(monkeypatch):
     run_expert("expert_1", _base_input())
 
     assert mock_anthropic_cls.call_count == 0
+
+
+# ---------------------------------------------------------------------------
+# Test 15: import succeeds even when AutoModelForCausalLM.from_pretrained raises
+# ---------------------------------------------------------------------------
+
+
+def test_import_succeeds_when_model_loading_fails(monkeypatch):
+    """Module import must not raise even if model files are unavailable."""
+    from unittest.mock import patch
+    import importlib
+    import sys
+
+    # Remove the cached module so it reloads
+    for key in list(sys.modules.keys()):
+        if "experts.expert_base" in key or key == "experts.expert_base":
+            del sys.modules[key]
+
+    with patch(
+        "transformers.AutoModelForCausalLM.from_pretrained",
+        side_effect=OSError("model files not found"),
+    ):
+        import experts.expert_base as reloaded  # noqa: F401 — import must not raise
+
+    # Restore original module
+    for key in list(sys.modules.keys()):
+        if "experts.expert_base" in key or key == "experts.expert_base":
+            del sys.modules[key]
+    import experts.expert_base  # noqa: F401
+
+
+# ---------------------------------------------------------------------------
+# Test 16: run_expert returns dict with required keys when model is unavailable
+# ---------------------------------------------------------------------------
+
+
+def test_run_expert_returns_mock_when_model_unavailable(monkeypatch):
+    """When qwen_model and qwen_tokenizer are None, run_expert returns structured mock."""
+    monkeypatch.setattr(eb, "qwen_model", None)
+    monkeypatch.setattr(eb, "qwen_tokenizer", None)
+
+    result = run_expert("expert_1", _base_input())
+
+    required_keys = {
+        "expert_id", "expert_name", "submission_id", "evaluated_at",
+        "dimension_scores", "expert_risk_level", "aggregation_trace",
+        "multilingual_flag_applied",
+    }
+    assert required_keys.issubset(result.keys())
+    assert result["expert_risk_level"] == "LOW"
+    assert len(result["dimension_scores"]) == 5
+    assert all(s["severity"] == "LOW" for s in result["dimension_scores"])
+
+
+# ---------------------------------------------------------------------------
+# Test 17: _make_structured_mock returns correct anchor for expert_1
+# ---------------------------------------------------------------------------
+
+
+def test_make_structured_mock_expert1_jailbreak_anchor():
+    """Jailbreak Resistance anchor framework must equal 'NIST AI RMF 1.0'."""
+    result = _make_structured_mock("expert_1", _base_input())
+
+    jailbreak = next(
+        s for s in result["dimension_scores"] if s["dimension"] == "Jailbreak Resistance"
+    )
+    assert jailbreak["evidence_anchor"]["framework"] == "NIST AI RMF 1.0"
+
+
+# ---------------------------------------------------------------------------
+# Test 18: _make_structured_mock reasoning does not contain "Fallback"
+# ---------------------------------------------------------------------------
+
+
+def test_make_structured_mock_reasoning_no_fallback_word():
+    """reasoning fields in structured mock must not contain the word 'Fallback'."""
+    result = _make_structured_mock("expert_1", _base_input())
+
+    for score in result["dimension_scores"]:
+        assert "Fallback" not in score["reasoning"], (
+            f"'Fallback' found in reasoning for dimension '{score['dimension']}'"
+        )

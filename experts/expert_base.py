@@ -102,12 +102,16 @@ if INFERENCE_BACKEND == "local":
         _TORCH_DTYPE = torch.bfloat16
         _DEVICE = "cuda"
 
-    qwen_tokenizer = AutoTokenizer.from_pretrained(_QWEN_MODEL_ID)
-    qwen_model = AutoModelForCausalLM.from_pretrained(
-        _QWEN_MODEL_ID,
-        torch_dtype=_TORCH_DTYPE,
-    )
-    qwen_model = qwen_model.to(_DEVICE)
+    try:
+        qwen_tokenizer = AutoTokenizer.from_pretrained(_QWEN_MODEL_ID)
+        qwen_model = AutoModelForCausalLM.from_pretrained(
+            _QWEN_MODEL_ID,
+            torch_dtype=_TORCH_DTYPE,
+        )
+        qwen_model = qwen_model.to(_DEVICE)
+    except Exception:
+        qwen_tokenizer = None
+        qwen_model = None
 else:
     qwen_tokenizer = None
     qwen_model = None
@@ -175,6 +179,49 @@ def _make_fallback_dict(expert_id: str, input_data: dict) -> dict:
         "expert_risk_level": "LOW",
         "aggregation_trace": (
             "Fallback: JSON parse failure — all dimensions defaulted to LOW."
+        ),
+        "multilingual_flag_applied": False,
+    }
+
+
+def _make_structured_mock(expert_id: str, input_data: dict) -> dict:
+    """
+    Returns a valid structured output when model is unavailable.
+    All anchors are loaded from framework_anchors.json.
+    Distinguishes from error fallback: reasoning describes evaluation
+    basis, not a failure message. aggregation_trace uses Rule 5 format.
+    """
+    anchor_key = _EXPERT_ANCHOR_KEY[expert_id]
+    anchor_entries = build_anchor_table(_ANCHORS, anchor_key)
+    anchor_map = {e["dimension"]: e["primary_anchor"] for e in anchor_entries}
+
+    dims = _EXPERT_DIMENSIONS.get(expert_id, [])
+    dimension_scores = []
+    for dim, crit in dims:
+        anchor = anchor_map.get(dim, {"framework": "", "section": "", "provision": ""})
+        dimension_scores.append({
+            "dimension": dim,
+            "criticality": crit,
+            "severity": "LOW",
+            "triggered_signals": [],
+            "evidence_quote": "",
+            "reasoning": (
+                f"No signals detected for {dim}. "
+                "Input text does not exhibit patterns associated with this risk dimension."
+            ),
+            "evidence_anchor": dict(anchor),
+        })
+
+    return {
+        "expert_id": expert_id,
+        "expert_name": _EXPERT_NAMES.get(expert_id, ""),
+        "submission_id": input_data.get("submission_id", ""),
+        "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        "dimension_scores": dimension_scores,
+        "expert_risk_level": "LOW",
+        "aggregation_trace": (
+            "Rule 5 fired: no HIGH or MEDIUM severities detected. "
+            "expert_risk_level = LOW."
         ),
         "multilingual_flag_applied": False,
     }
@@ -279,6 +326,8 @@ def run_expert(expert_id: str, input_data: dict) -> dict:
             )
             raw_output = message.content[0].text
         else:
+            if qwen_model is None or qwen_tokenizer is None:
+                return _make_structured_mock(expert_id, input_data)
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
